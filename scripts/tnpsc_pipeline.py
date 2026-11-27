@@ -1,10 +1,12 @@
 import os
 import re
 import io
+import sys
 import time
 import json
 import hashlib
-from urllib.parse import urljoin, quote_plus
+from concurrent.futures import ThreadPoolExecutor
+from urllib.parse import urljoin
 
 import urllib3
 import requests
@@ -12,10 +14,9 @@ import pymupdf
 from PIL import Image
 import pytesseract
 from bs4 import BeautifulSoup
-import psycopg2
-from psycopg2.extras import execute_values
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+sys.stdout.reconfigure(line_buffering=True)
 
 # ==========================================
 # 1. CONFIGURATION
@@ -33,17 +34,11 @@ INCLUDE_OTHER_EXAMS = os.getenv("INCLUDE_OTHER_EXAMS", "true").lower() == "true"
 
 MAX_EXAM_ROWS_PER_YEAR = int(os.getenv("MAX_EXAM_ROWS_PER_YEAR", "10"))
 MAX_PAGES_PER_PDF = int(os.getenv("MAX_PAGES_PER_PDF", "40"))
+BATCH_SIZE = int(os.getenv("BATCH_SIZE", "5"))
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 }
-
-DB_HOST = os.getenv("DB_HOST", "")
-DB_PORT = int(os.getenv("DB_PORT", "5432"))
-DB_NAME = os.getenv("DB_NAME", "postgres")
-DB_USER = os.getenv("DB_USER", "postgres")
-DB_PASS = os.getenv("DB_PASS", "")
-CONN_STR = f"postgresql://{DB_USER}:{quote_plus(DB_PASS)}@{DB_HOST}:{DB_PORT}/{DB_NAME}?sslmode=require"
 
 SKIP_FILE_WORDS = [
     "check_list", "checklist", "instruction", "syllabus", "notification",
@@ -102,16 +97,16 @@ def get_year_soup(session: requests.Session, year_val: str) -> BeautifulSoup:
         if opt.get("value") is not None
     ]
     if available_values:
-        print(f"  [INFO] Available ddl_year options: {available_values}")
+        print(f"  [INFO] Available ddl_year options: {available_values}", flush=True)
         if str(year_val) not in available_values:
-            print(f"  [WARN] Year '{year_val}' not in ddl_year options; falling back to default view.")
+            print(f"  [WARN] Year '{year_val}' not in ddl_year options; falling back to default view.", flush=True)
             return soup
 
     vs = soup.find("input", {"name": "__VIEWSTATE"})
     ev = soup.find("input", {"name": "__EVENTVALIDATION"})
     vsg = soup.find("input", {"name": "__VIEWSTATEGENERATOR"})
     if not (vs and ev):
-        print(f"  [WARN] Missing ASP.NET form tokens for year '{year_val}'; falling back to default view.")
+        print(f"  [WARN] Missing ASP.NET form tokens for year '{year_val}'; falling back to default view.", flush=True)
         return soup
 
     field_name = ddl["name"] if ddl and ddl.get("name") else "ctl00$ContentPlaceHolder1$ddl_year"
@@ -137,10 +132,10 @@ def get_year_soup(session: requests.Session, year_val: str) -> BeautifulSoup:
         return BeautifulSoup(rp.text, "html.parser")
     except requests.HTTPError as e:
         status = e.response.status_code if e.response is not None else "unknown"
-        print(f"  [WARN] POST for year '{year_val}' returned HTTP {status}; falling back to default view.")
+        print(f"  [WARN] POST for year '{year_val}' returned HTTP {status}; falling back to default view.", flush=True)
         return soup
     except requests.RequestException as e:
-        print(f"  [WARN] POST for year '{year_val}' failed ({e}); falling back to default view.")
+        print(f"  [WARN] POST for year '{year_val}' failed ({e}); falling back to default view.", flush=True)
         return soup
 
 def crawl_all_selected_years() -> list[dict]:
@@ -149,7 +144,7 @@ def crawl_all_selected_years() -> list[dict]:
     downloaded_items = []
 
     for yr in YEARS_TO_CRAWL:
-        print(f"\n================ CRAWLING YEAR FILTER: {yr} ================")
+        print(f"\n================ CRAWLING YEAR FILTER: {yr} ================", flush=True)
         soup = get_year_soup(session, yr)
         content = soup.find(id="page-content") or soup
 
@@ -177,7 +172,7 @@ def crawl_all_selected_years() -> list[dict]:
 
             exam_year = extract_year_from_row(cols, yr)
             row_uid = hashlib.md5(f"{exam_title}_{links[0][1]}".encode()).hexdigest()[:10]
-            print(f"[{yr} #{rows_collected}] {exam_title[:75]} | tags={exam_tags} | year={exam_year}")
+            print(f"[{yr} #{rows_collected}] {exam_title[:75]} | tags={exam_tags} | year={exam_year}", flush=True)
 
             for label, href in links:
                 if "subjects.aspx" in href.lower():
@@ -185,7 +180,7 @@ def crawl_all_selected_years() -> list[dict]:
                     try:
                         sub_soup = BeautifulSoup(session.get(href, verify=False, timeout=30).text, "html.parser")
                     except Exception as e:
-                        print(f"  [ERR] subjects page {href}: {e}")
+                        print(f"  [ERR] subjects page {href}: {e}", flush=True)
                         continue
 
                     sub_area = sub_soup.find(id="page-content") or sub_soup
@@ -208,7 +203,7 @@ def crawl_all_selected_years() -> list[dict]:
                                     continue
                                 time.sleep(0.2)
                             except Exception as e:
-                                print(f"  [ERR] {pdf_url}: {e}")
+                                print(f"  [ERR] {pdf_url}: {e}", flush=True)
                                 continue
 
                         is_key = any(k in combo for k in ["fak", "final_key", "answerkey", "answer_key"])
@@ -223,7 +218,7 @@ def crawl_all_selected_years() -> list[dict]:
                             "source_url": pdf_url,
                             "is_key_sheet": is_key,
                         })
-                        print(f"  [PDF] {fname}")
+                        print(f"  [PDF] {fname}", flush=True)
 
                 elif href.lower().endswith(".pdf"):
                     combo = (label + " " + href).lower()
@@ -240,7 +235,7 @@ def crawl_all_selected_years() -> list[dict]:
                             else:
                                 continue
                         except Exception as e:
-                            print(f"  [ERR] {href}: {e}")
+                            print(f"  [ERR] {href}: {e}", flush=True)
                             continue
 
                     is_key = any(k in combo for k in ["fak", "final_key", "answerkey", "answer_key"])
@@ -255,7 +250,7 @@ def crawl_all_selected_years() -> list[dict]:
                         "source_url": href,
                         "is_key_sheet": is_key,
                     })
-                    print(f"  [PDF] {fname} (key_sheet={is_key})")
+                    print(f"  [PDF] {fname} (key_sheet={is_key})", flush=True)
 
     return downloaded_items
 
@@ -266,7 +261,10 @@ def build_key_maps_by_row(key_items: list[dict]) -> dict[str, dict[int, int]]:
     maps: dict[str, dict[int, int]] = {}
     for item in key_items:
         doc = pymupdf.open(item["path"])
-        txt = "\n".join(p.get_text("text") for p in doc)
+        try:
+            txt = "\n".join(p.get_text("text") for p in doc)
+        finally:
+            doc.close()
         qmap = maps.setdefault(item["row_uid"], {})
         for m in re.finditer(r"\b([1-9]|[1-9][0-9]|1[0-9]{2}|200)\s*[\.\-\):]\s*\(?([A-Ea-e])\)?", txt):
             qmap[int(m.group(1))] = OPTION_MAP[m.group(2).upper()]
@@ -298,24 +296,38 @@ def classify_unit(q_en: str, subject: str) -> str:
         return "GS_APTITUDE"
     return "GS_GENERAL"
 
+def _ocr_single_page(args: tuple[str, int, int]) -> str:
+    pdf_path, page_idx, dpi = args
+    doc = pymupdf.open(pdf_path)
+    try:
+        pix = doc[page_idx].get_pixmap(dpi=dpi)
+        img = Image.open(io.BytesIO(pix.tobytes("png")))
+        return pytesseract.image_to_string(img, lang="eng", config="--psm 6")
+    finally:
+        doc.close()
+
 def extract_booklet_english_text(pdf_path: str, max_pages: int = 40) -> str:
     doc = pymupdf.open(pdf_path)
-    digital_sample = "\n".join(doc[i].get_text("text") for i in range(min(4, len(doc)))).strip()
+    total_pages = len(doc)
+    digital_sample = "\n".join(doc[i].get_text("text") for i in range(min(4, total_pages))).strip()
     use_digital = len(digital_sample) > 400
+    limit = min(total_pages, max_pages)
+
+    raw_pages: list[str] = []
+    if use_digital:
+        for idx in range(limit):
+            raw_pages.append(doc[idx].get_text("text"))
+        doc.close()
+    else:
+        doc.close()
+        tasks = [(pdf_path, idx, 150) for idx in range(limit)]
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            raw_pages = list(pool.map(_ocr_single_page, tasks))
 
     out_pages = []
-    limit = min(len(doc), max_pages)
-    for idx in range(limit):
-        if use_digital:
-            raw = doc[idx].get_text("text")
-        else:
-            pix = doc[idx].get_pixmap(dpi=200)
-            img = Image.open(io.BytesIO(pix.tobytes("png")))
-            raw = pytesseract.image_to_string(img, lang="eng", config="--psm 6")
-
+    for raw in raw_pages:
         if not raw or len(raw.strip()) < 100 or "SPACE FOR ROUGH WORK" in raw.upper():
             continue
-
         cleaned_lines = [cl for ln in raw.splitlines() if (cl := clean_english_line(ln))]
         if len("\n".join(cleaned_lines)) > 50:
             out_pages.append("\n".join(cleaned_lines))
@@ -387,107 +399,95 @@ def parse_questions_from_text(text: str, meta: dict, key_map: dict[int, int]) ->
     return parsed
 
 # ==========================================
-# 5. RUN EXTRACTION & UPSERT TO SUPABASE
+# 5. BATCHED EXTRACTION (EVERY 5 PDFs) & JSON SAVE
 # ==========================================
+def load_existing_checkpoint(path: str) -> dict[str, dict]:
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            existing = json.load(f)
+        if isinstance(existing, list):
+            return {item["question_hash"]: item for item in existing if item.get("question_hash")}
+    except Exception as e:
+        print(f"[WARN] Could not load existing checkpoint {path}: {e}", flush=True)
+    return {}
+
+def merge_questions_into_map(merged: dict[str, dict], new_items: list[dict]) -> dict[str, dict]:
+    for item in new_items:
+        h = item["question_hash"]
+        if h in merged:
+            existing_exams = merged[h].get("exams", [])
+            merged[h]["exams"] = sorted(list(set(existing_exams + item.get("exams", []))))
+            merged[h]["repeat_count"] = int(merged[h].get("repeat_count", 1)) + 1
+            if item.get("correct_index") is not None:
+                merged[h]["correct_index"] = item["correct_index"]
+                merged[h]["has_answer_key"] = True
+                if item.get("key_stage") == "FINAL":
+                    merged[h]["key_stage"] = "FINAL"
+        else:
+            copy_item = dict(item)
+            copy_item["repeat_count"] = int(copy_item.get("repeat_count", 1))
+            merged[h] = copy_item
+    return merged
+
+def write_checkpoint_json(merged: dict[str, dict], out_path: str) -> list[dict]:
+    final_list = list(merged.values())
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(final_list, f, ensure_ascii=False, indent=2)
+    return final_list
+
 def main() -> None:
     all_downloads = crawl_all_selected_years()
     key_sheets = [d for d in all_downloads if d["is_key_sheet"]]
     booklets = [d for d in all_downloads if not d["is_key_sheet"]]
     row_key_maps = build_key_maps_by_row(key_sheets)
 
-    collected = []
-    for b in booklets:
-        txt = extract_booklet_english_text(b["path"], max_pages=MAX_PAGES_PER_PDF)
-        qs = parse_questions_from_text(txt, b, row_key_maps.get(b["row_uid"], {}))
-        print(f"Extracted {len(qs)} English questions from {os.path.basename(b['path'])} ({b['exams']})")
-        collected.extend(qs)
+    merged = load_existing_checkpoint(CHECKPOINT_FILE)
+    print(
+        f"\nLoaded {len(merged)} existing questions from checkpoint. "
+        f"Found {len(key_sheets)} key sheets and {len(booklets)} booklets "
+        f"(batch_size={BATCH_SIZE}).",
+        flush=True,
+    )
 
-    merged = {}
-    for item in collected:
-        h = item["question_hash"]
-        if h in merged:
-            merged[h]["exams"] = sorted(list(set(merged[h]["exams"] + item["exams"])))
-            merged[h]["repeat_count"] = merged[h].get("repeat_count", 1) + 1
-            if item["correct_index"] is not None:
-                merged[h]["correct_index"] = item["correct_index"]
-                merged[h]["has_answer_key"] = True
-        else:
-            item["repeat_count"] = 1
-            merged[h] = item
+    final_list = write_checkpoint_json(merged, CHECKPOINT_FILE)
+    total_batches = (len(booklets) + BATCH_SIZE - 1) // BATCH_SIZE if booklets else 0
 
-    final_list = list(merged.values())
-    with open(CHECKPOINT_FILE, "w", encoding="utf-8") as f:
-        json.dump(final_list, f, ensure_ascii=False, indent=2)
+    for batch_num in range(1, total_batches + 1):
+        start_idx = (batch_num - 1) * BATCH_SIZE
+        batch_booklets = booklets[start_idx : start_idx + BATCH_SIZE]
+        t0 = time.time()
+        batch_questions = []
 
-    print(f"\nTotal unique English questions ready: {len(final_list)}")
-    print(f"With answer key: {sum(1 for x in final_list if x['has_answer_key'])} | Awaiting key: {sum(1 for x in final_list if not x['has_answer_key'])}")
-
-    if final_list and DB_HOST and DB_PASS:
-        DDL_SQL = """
-        CREATE TABLE IF NOT EXISTS public.questions (
-            id BIGSERIAL PRIMARY KEY,
-            question_hash TEXT UNIQUE NOT NULL,
-            syllabus_unit_id TEXT NOT NULL,
-            exams TEXT[] NOT NULL DEFAULT '{}',
-            exam_year TEXT,
-            key_stage TEXT NOT NULL DEFAULT 'TENTATIVE',
-            question_en TEXT NOT NULL,
-            options_en JSONB NOT NULL,
-            correct_index SMALLINT CHECK (correct_index BETWEEN 0 AND 4),
-            has_answer_key BOOLEAN NOT NULL DEFAULT FALSE,
-            repeat_count INT NOT NULL DEFAULT 1,
-            source_exam TEXT,
-            source_url TEXT,
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        );
-        CREATE INDEX IF NOT EXISTS idx_questions_exams ON public.questions USING GIN(exams);
-        CREATE INDEX IF NOT EXISTS idx_questions_unit ON public.questions(syllabus_unit_id);
-        """
-
-        UPSERT_SQL = """
-        INSERT INTO public.questions (
-            question_hash, syllabus_unit_id, exams, exam_year, key_stage,
-            question_en, options_en, correct_index, has_answer_key,
-            repeat_count, source_exam, source_url
+        print(
+            f"\n--- Batch {batch_num}/{total_batches}: processing {len(batch_booklets)} PDFs ---",
+            flush=True,
         )
-        VALUES %s
-        ON CONFLICT (question_hash) DO UPDATE SET
-            exams = ARRAY(SELECT DISTINCT unnest(public.questions.exams || EXCLUDED.exams)),
-            repeat_count = GREATEST(public.questions.repeat_count, EXCLUDED.repeat_count),
-            correct_index = COALESCE(EXCLUDED.correct_index, public.questions.correct_index),
-            has_answer_key = public.questions.has_answer_key OR EXCLUDED.has_answer_key,
-            key_stage = CASE WHEN EXCLUDED.key_stage = 'FINAL' THEN 'FINAL' ELSE public.questions.key_stage END;
-        """
-
-        db_rows = [
-            (
-                r["question_hash"],
-                r["syllabus_unit_id"],
-                r["exams"],
-                r["exam_year"],
-                r["key_stage"],
-                r["question_en"],
-                json.dumps(r["options_en"], ensure_ascii=False),
-                r["correct_index"],
-                r["has_answer_key"],
-                r["repeat_count"],
-                r["source_exam"],
-                r["source_url"],
+        for b in batch_booklets:
+            txt = extract_booklet_english_text(b["path"], max_pages=MAX_PAGES_PER_PDF)
+            qs = parse_questions_from_text(txt, b, row_key_maps.get(b["row_uid"], {}))
+            batch_questions.extend(qs)
+            print(
+                f"  Parsed {len(qs)} questions from {os.path.basename(b['path'])}",
+                flush=True,
             )
-            for r in final_list
-        ]
 
-        conn = psycopg2.connect(CONN_STR)
-        try:
-            with conn:
-                with conn.cursor() as cur:
-                    cur.execute(DDL_SQL)
-                    execute_values(cur, UPSERT_SQL, db_rows, page_size=250)
-            print(f"Upserted {len(db_rows)} questions into Supabase!")
-        finally:
-            conn.close()
-    elif not (DB_HOST and DB_PASS):
-        print("DB_HOST or DB_PASS not set; skipped Supabase upsert.")
+        merged = merge_questions_into_map(merged, batch_questions)
+        final_list = write_checkpoint_json(merged, CHECKPOINT_FILE)
+        print(
+            f"Updated {CHECKPOINT_FILE} after Batch {batch_num}/{total_batches}: "
+            f"+{len(batch_questions)} parsed, {len(final_list)} unique total ({time.time() - t0:.1f}s)",
+            flush=True,
+        )
+
+    print(f"\nTotal unique English questions ready: {len(final_list)}", flush=True)
+    print(
+        f"With answer key: {sum(1 for x in final_list if x.get('has_answer_key'))} | "
+        f"Awaiting key: {sum(1 for x in final_list if not x.get('has_answer_key'))}",
+        flush=True,
+    )
 
 if __name__ == "__main__":
     main()
