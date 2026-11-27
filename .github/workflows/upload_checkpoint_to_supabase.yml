@@ -1,0 +1,44 @@
+name: Upload Checkpoint to Supabase
+
+on:
+  workflow_dispatch:
+    inputs:
+      checkpoint_path:
+        description: "Path to checkpoint JSON file"
+        required: false
+        default: "data/parsed_questions_checkpoint.json"
+      batch_size:
+        description: "Number of rows per Supabase upsert batch"
+        required: false
+        default: "250"
+
+jobs:
+  upload-to-supabase:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify checkpoint JSON exists and is non-empty
+        run: |
+          test -s "${{ inputs.checkpoint_path || 'data/parsed_questions_checkpoint.json' }}"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install requests
+        run: pip install requests>=2.31.0
+
+      - name: Upsert checkpoint JSON to Supabase
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          CHECKPOINT_JSON_PATH: ${{ inputs.checkpoint_path || 'data/parsed_questions_checkpoint.json' }}
+          BATCH_SIZE: ${{ inputs.batch_size || '250' }}
+          PYTHONUNBUFFERED: "1"
+        run: python -u scripts/upsert_checkpoint_to_supabase.py
