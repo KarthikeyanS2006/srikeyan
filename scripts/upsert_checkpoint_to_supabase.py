@@ -86,7 +86,7 @@ def main() -> None:
             with conn.cursor() as cur:
                 cur.execute(DDL_SQL)
                 execute_values(cur, UPSERT_SQL, db_rows, page_size=250)
-        print(f"Upserted {len(db_rows)} questions from {CHECKPOINT_JSON_PATH} into Supabase!")
+        print(f"Upserted {len(db_rows)} questions from {CHECKPOINT_JSON_PATH} into Supabase!", flush=True)
     finally:
         conn.close()
 
