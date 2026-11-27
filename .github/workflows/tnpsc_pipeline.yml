@@ -40,24 +40,32 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r requirements.txt
 
-      - name: Scrape and parse questions (skip DB here)
+      - name: Seed working checkpoint from repo if present
+        run: |
+          mkdir -p tnpsc_full_pipeline
+          if [ -s data/parsed_questions_checkpoint.json ]; then
+            cp data/parsed_questions_checkpoint.json tnpsc_full_pipeline/parsed_questions_checkpoint.json
+          fi
+
+      - name: Scrape and parse questions in batches of 5
         env:
-          DB_HOST: ""
-          DB_PASS: ""
           PYTHONUNBUFFERED: "1"
           OMP_THREAD_LIMIT: "1"
           WORK_DIR: ./tnpsc_full_pipeline
+          BATCH_SIZE: "5"
           YEARS_TO_CRAWL: ${{ inputs.years || '0,2025,2024' }}
           MAX_PAGES_PER_PDF: ${{ inputs.max_pages_per_pdf || '40' }}
         run: python -u scripts/tnpsc_pipeline.py
 
       - name: Verify checkpoint JSON exists and is non-empty
+        if: always()
         run: |
           test -s tnpsc_full_pipeline/parsed_questions_checkpoint.json
           mkdir -p data
           cp tnpsc_full_pipeline/parsed_questions_checkpoint.json data/parsed_questions_checkpoint.json
 
       - name: Upload checkpoint JSON artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: tnpsc-parsed-questions
@@ -65,6 +73,7 @@ jobs:
           if-no-files-found: error
 
       - name: Commit and push JSON to GitHub repository
+        if: always()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
