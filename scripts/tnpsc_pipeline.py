@@ -26,15 +26,11 @@ PDF_DIR = os.path.join(WORK_DIR, "pdfs")
 CHECKPOINT_FILE = os.path.join(WORK_DIR, "parsed_questions_checkpoint.json")
 os.makedirs(PDF_DIR, exist_ok=True)
 
-# Choose which years from TNPSC dropdown to crawl:
-# ["0"] = current/recent view; or ["2026", "2025", "2024", "2023", "2022"]
 years_env = os.getenv("YEARS_TO_CRAWL", "0,2025,2024")
 YEARS_TO_CRAWL = [y.strip() for y in years_env.split(",") if y.strip()]
 
-# Set to True to include all other TNPSC exams (Technical, MVI, etc.) alongside Group 1/2/2A/4
 INCLUDE_OTHER_EXAMS = os.getenv("INCLUDE_OTHER_EXAMS", "true").lower() == "true"
 
-# Limits per run so jobs finish reliably within workflow timeouts
 MAX_EXAM_ROWS_PER_YEAR = int(os.getenv("MAX_EXAM_ROWS_PER_YEAR", "10"))
 MAX_PAGES_PER_PDF = int(os.getenv("MAX_PAGES_PER_PDF", "40"))
 
@@ -42,7 +38,7 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 }
 
-DB_HOST = os.getenv("DB_HOST", "db.elozrsnsuikdqbrreouq.supabase.co")
+DB_HOST = os.getenv("DB_HOST", "")
 DB_PORT = int(os.getenv("DB_PORT", "5432"))
 DB_NAME = os.getenv("DB_NAME", "postgres")
 DB_USER = os.getenv("DB_USER", "postgres")
@@ -96,24 +92,56 @@ def get_year_soup(session: requests.Session, year_val: str) -> BeautifulSoup:
     r.raise_for_status()
     soup = BeautifulSoup(r.text, "html.parser")
 
-    if year_val and year_val != "0":
-        vs = soup.find("input", {"name": "__VIEWSTATE"})
-        ev = soup.find("input", {"name": "__EVENTVALIDATION"})
-        vsg = soup.find("input", {"name": "__VIEWSTATEGENERATOR"})
-        if vs and ev:
-            payload = {
-                "__EVENTTARGET": "ctl00$ContentPlaceHolder1$ddl_year",
-                "__EVENTARGUMENT": "",
-                "__VIEWSTATE": vs["value"],
-                "__EVENTVALIDATION": ev["value"],
-                "ctl00$ContentPlaceHolder1$ddl_year": str(year_val),
-            }
-            if vsg:
-                payload["__VIEWSTATEGENERATOR"] = vsg["value"]
-            rp = session.post(BASE_URL, data=payload, verify=False, timeout=35)
-            rp.raise_for_status()
-            soup = BeautifulSoup(rp.text, "html.parser")
-    return soup
+    if not year_val or year_val == "0":
+        return soup
+
+    ddl = soup.find("select", {"name": re.compile(r"ddl_year$")})
+    available_values = [
+        opt.get("value", "").strip()
+        for opt in (ddl.find_all("option") if ddl else [])
+        if opt.get("value") is not None
+    ]
+    if available_values:
+        print(f"  [INFO] Available ddl_year options: {available_values}")
+        if str(year_val) not in available_values:
+            print(f"  [WARN] Year '{year_val}' not in ddl_year options; falling back to default view.")
+            return soup
+
+    vs = soup.find("input", {"name": "__VIEWSTATE"})
+    ev = soup.find("input", {"name": "__EVENTVALIDATION"})
+    vsg = soup.find("input", {"name": "__VIEWSTATEGENERATOR"})
+    if not (vs and ev):
+        print(f"  [WARN] Missing ASP.NET form tokens for year '{year_val}'; falling back to default view.")
+        return soup
+
+    field_name = ddl["name"] if ddl and ddl.get("name") else "ctl00$ContentPlaceHolder1$ddl_year"
+    payload = {
+        "__EVENTTARGET": field_name,
+        "__EVENTARGUMENT": "",
+        "__VIEWSTATE": vs.get("value", ""),
+        "__EVENTVALIDATION": ev.get("value", ""),
+        field_name: str(year_val),
+    }
+    if vsg and vsg.get("value"):
+        payload["__VIEWSTATEGENERATOR"] = vsg["value"]
+
+    post_headers = {
+        "Referer": BASE_URL,
+        "Origin": "https://www.tnpsc.gov.in",
+        "Content-Type": "application/x-www-form-urlencoded",
+    }
+
+    try:
+        rp = session.post(BASE_URL, data=payload, headers=post_headers, verify=False, timeout=35)
+        rp.raise_for_status()
+        return BeautifulSoup(rp.text, "html.parser")
+    except requests.HTTPError as e:
+        status = e.response.status_code if e.response is not None else "unknown"
+        print(f"  [WARN] POST for year '{year_val}' returned HTTP {status}; falling back to default view.")
+        return soup
+    except requests.RequestException as e:
+        print(f"  [WARN] POST for year '{year_val}' failed ({e}); falling back to default view.")
+        return soup
 
 def crawl_all_selected_years() -> list[dict]:
     session = requests.Session()
@@ -394,7 +422,7 @@ def main() -> None:
     print(f"\nTotal unique English questions ready: {len(final_list)}")
     print(f"With answer key: {sum(1 for x in final_list if x['has_answer_key'])} | Awaiting key: {sum(1 for x in final_list if not x['has_answer_key'])}")
 
-    if final_list and DB_PASS:
+    if final_list and DB_HOST and DB_PASS:
         DDL_SQL = """
         CREATE TABLE IF NOT EXISTS public.questions (
             id BIGSERIAL PRIMARY KEY,
@@ -458,8 +486,8 @@ def main() -> None:
             print(f"Upserted {len(db_rows)} questions into Supabase!")
         finally:
             conn.close()
-    elif not DB_PASS:
-        print("DB_PASS not set; skipped Supabase upsert.")
+    elif not (DB_HOST and DB_PASS):
+        print("DB_HOST or DB_PASS not set; skipped Supabase upsert.")
 
 if __name__ == "__main__":
     main()
