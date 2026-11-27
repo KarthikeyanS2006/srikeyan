@@ -1,55 +1,29 @@
 import os
 import json
-from urllib.parse import quote_plus
-import psycopg2
-from psycopg2.extras import execute_values
+import requests
 
+SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
+SERVICE_KEY = os.getenv("SUPABASE_KEY", "").strip()
 CHECKPOINT_JSON_PATH = os.getenv("CHECKPOINT_JSON_PATH", "data/parsed_questions_checkpoint.json")
+BATCH_SIZE = int(os.getenv("BATCH_SIZE", "250"))
 
-DB_HOST = os.getenv("DB_HOST", "")
-DB_PORT = int(os.getenv("DB_PORT", "5432"))
-DB_NAME = os.getenv("DB_NAME", "postgres")
-DB_USER = os.getenv("DB_USER", "postgres")
-DB_PASS = os.getenv("DB_PASS", "")
-CONN_STR = f"postgresql://{DB_USER}:{quote_plus(DB_PASS)}@{DB_HOST}:{DB_PORT}/{DB_NAME}?sslmode=require"
 
-DDL_SQL = """
-CREATE TABLE IF NOT EXISTS public.questions (
-    id BIGSERIAL PRIMARY KEY,
-    question_hash TEXT UNIQUE NOT NULL,
-    syllabus_unit_id TEXT NOT NULL,
-    exams TEXT[] NOT NULL DEFAULT '{}',
-    exam_year TEXT,
-    key_stage TEXT NOT NULL DEFAULT 'TENTATIVE',
-    question_en TEXT NOT NULL,
-    options_en JSONB NOT NULL,
-    correct_index SMALLINT CHECK (correct_index BETWEEN 0 AND 4),
-    has_answer_key BOOLEAN NOT NULL DEFAULT FALSE,
-    repeat_count INT NOT NULL DEFAULT 1,
-    source_exam TEXT,
-    source_url TEXT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-CREATE INDEX IF NOT EXISTS idx_questions_exams ON public.questions USING GIN(exams);
-CREATE INDEX IF NOT EXISTS idx_questions_unit ON public.questions(syllabus_unit_id);
-"""
+def normalize_options(val):
+    if isinstance(val, list):
+        return val
+    if isinstance(val, str):
+        try:
+            parsed = json.loads(val)
+            return parsed if isinstance(parsed, list) else []
+        except Exception:
+            return []
+    return []
 
-UPSERT_SQL = """
-INSERT INTO public.questions (
-    question_hash, syllabus_unit_id, exams, exam_year, key_stage,
-    question_en, options_en, correct_index, has_answer_key,
-    repeat_count, source_exam, source_url
-)
-VALUES %s
-ON CONFLICT (question_hash) DO UPDATE SET
-    exams = ARRAY(SELECT DISTINCT unnest(public.questions.exams || EXCLUDED.exams)),
-    repeat_count = GREATEST(public.questions.repeat_count, EXCLUDED.repeat_count),
-    correct_index = COALESCE(EXCLUDED.correct_index, public.questions.correct_index),
-    has_answer_key = public.questions.has_answer_key OR EXCLUDED.has_answer_key,
-    key_stage = CASE WHEN EXCLUDED.key_stage = 'FINAL' THEN 'FINAL' ELSE public.questions.key_stage END;
-"""
 
 def main() -> None:
+    if not SUPABASE_URL or not SERVICE_KEY:
+        raise RuntimeError("Missing SUPABASE_URL or SUPABASE_KEY environment variable/secret.")
+
     if not os.path.exists(CHECKPOINT_JSON_PATH):
         raise FileNotFoundError(f"Checkpoint file not found: {CHECKPOINT_JSON_PATH}")
 
@@ -57,38 +31,45 @@ def main() -> None:
         rows = json.load(f)
 
     if not isinstance(rows, list) or len(rows) == 0:
-        raise ValueError(f"Checkpoint file is empty or invalid: {CHECKPOINT_JSON_PATH}")
+        raise ValueError(f"No rows found in {CHECKPOINT_JSON_PATH}")
 
-    db_rows = [
-        (
-            r["question_hash"],
-            r["syllabus_unit_id"],
-            r["exams"],
-            r.get("exam_year"),
-            r.get("key_stage", "TENTATIVE"),
-            r["question_en"],
-            json.dumps(r["options_en"], ensure_ascii=False) if isinstance(r["options_en"], list) else r["options_en"],
-            r.get("correct_index"),
-            bool(r.get("has_answer_key", False)),
-            int(r.get("repeat_count", 1)),
-            r.get("source_exam"),
-            r.get("source_url"),
-        )
+    payload = [
+        {
+            "question_hash": r["question_hash"],
+            "syllabus_unit_id": r["syllabus_unit_id"],
+            "exams": r.get("exams") or ["TNPSC_OTHER"],
+            "exam_year": r.get("exam_year"),
+            "key_stage": r.get("key_stage", "TENTATIVE"),
+            "question_en": r["question_en"],
+            "options_en": normalize_options(r.get("options_en")),
+            "correct_index": r.get("correct_index"),
+            "has_answer_key": bool(r.get("has_answer_key", False)),
+            "repeat_count": int(r.get("repeat_count", 1)),
+            "source_exam": r.get("source_exam"),
+            "source_url": r.get("source_url"),
+        }
         for r in rows
+        if r.get("question_hash") and r.get("question_en")
     ]
 
-    if not (DB_HOST and DB_PASS):
-        raise RuntimeError("DB_HOST or DB_PASS secret is missing.")
+    endpoint = f"{SUPABASE_URL}/rest/v1/questions?on_conflict=question_hash"
+    headers = {
+        "apikey": SERVICE_KEY,
+        "Authorization": f"Bearer {SERVICE_KEY}",
+        "Content-Type": "application/json",
+        "Prefer": "resolution=merge-duplicates,return=minimal",
+    }
 
-    conn = psycopg2.connect(CONN_STR)
-    try:
-        with conn:
-            with conn.cursor() as cur:
-                cur.execute(DDL_SQL)
-                execute_values(cur, UPSERT_SQL, db_rows, page_size=250)
-        print(f"Upserted {len(db_rows)} questions from {CHECKPOINT_JSON_PATH} into Supabase!", flush=True)
-    finally:
-        conn.close()
+    total_sent = 0
+    for i in range(0, len(payload), BATCH_SIZE):
+        chunk = payload[i : i + BATCH_SIZE]
+        resp = requests.post(endpoint, headers=headers, json=chunk, timeout=60)
+        resp.raise_for_status()
+        total_sent += len(chunk)
+        print(f"Upserted {total_sent}/{len(payload)} questions to Supabase...", flush=True)
+
+    print(f"Done! Upserted {total_sent} questions into public.questions.", flush=True)
+
 
 if __name__ == "__main__":
     main()
