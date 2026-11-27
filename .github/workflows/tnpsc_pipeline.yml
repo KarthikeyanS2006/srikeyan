@@ -12,14 +12,13 @@ on:
         required: false
         default: "40"
   schedule:
-    # Runs weekly on Sundays at 02:00 UTC (07:30 AM IST)
     - cron: "0 2 * * 0"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  run-pipeline:
+  save-json-to-github:
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
@@ -41,22 +40,67 @@ jobs:
       - name: Install Python dependencies
         run: pip install -r requirements.txt
 
-      - name: Run TNPSC pipeline
+      - name: Scrape and parse questions (skip DB here)
+        env:
+          DB_HOST: ""
+          DB_PASS: ""
+          PYTHONUNBUFFERED: "1"
+          OMP_THREAD_LIMIT: "1"
+          WORK_DIR: ./tnpsc_full_pipeline
+          YEARS_TO_CRAWL: ${{ inputs.years || '0,2025,2024' }}
+          MAX_PAGES_PER_PDF: ${{ inputs.max_pages_per_pdf || '40' }}
+        run: python -u scripts/tnpsc_pipeline.py
+
+      - name: Verify checkpoint JSON exists and is non-empty
+        run: |
+          test -s tnpsc_full_pipeline/parsed_questions_checkpoint.json
+          mkdir -p data
+          cp tnpsc_full_pipeline/parsed_questions_checkpoint.json data/parsed_questions_checkpoint.json
+
+      - name: Upload checkpoint JSON artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tnpsc-parsed-questions
+          path: data/parsed_questions_checkpoint.json
+          if-no-files-found: error
+
+      - name: Commit and push JSON to GitHub repository
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/parsed_questions_checkpoint.json
+          if git diff --staged --quiet; then
+            echo "No changes to data/parsed_questions_checkpoint.json"
+          else
+            git commit -m "chore: update parsed_questions_checkpoint.json [skip ci]"
+            git push
+          fi
+
+  upsert-to-supabase:
+    needs: save-json-to-github
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout updated repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install psycopg2-binary
+        run: pip install psycopg2-binary
+
+      - name: Upsert saved JSON to Supabase
         env:
           DB_HOST: ${{ secrets.DB_HOST }}
           DB_PORT: ${{ secrets.DB_PORT || '5432' }}
           DB_NAME: ${{ secrets.DB_NAME || 'postgres' }}
           DB_USER: ${{ secrets.DB_USER || 'postgres' }}
           DB_PASS: ${{ secrets.DB_PASS }}
-          WORK_DIR: ./tnpsc_full_pipeline
-          YEARS_TO_CRAWL: ${{ inputs.years || '0,2025,2024' }}
-          MAX_PAGES_PER_PDF: ${{ inputs.max_pages_per_pdf || '40' }}
-        run: python scripts/tnpsc_pipeline.py
-
-      - name: Upload checkpoint JSON artifact
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: tnpsc-parsed-questions
-          path: tnpsc_full_pipeline/parsed_questions_checkpoint.json
-          if-no-files-found: ignore
+          CHECKPOINT_JSON_PATH: data/parsed_questions_checkpoint.json
+          PYTHONUNBUFFERED: "1"
+        run: python -u scripts/upsert_checkpoint_to_supabase.py
