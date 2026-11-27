@@ -37,7 +37,10 @@ MAX_PAGES_PER_PDF = int(os.getenv("MAX_PAGES_PER_PDF", "40"))
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", "5"))
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Connection": "close",
 }
 
 SKIP_FILE_WORDS = [
@@ -82,9 +85,22 @@ def extract_year_from_row(cols: list[str], fallback_year: str) -> str:
 # ==========================================
 # 3. CRAWL ANSWER KEYS PAGE BY YEAR
 # ==========================================
-def get_year_soup(session: requests.Session, year_val: str) -> BeautifulSoup:
-    r = session.get(BASE_URL, verify=False, timeout=35)
-    r.raise_for_status()
+def get_year_soup(session: requests.Session, year_val: str) -> BeautifulSoup | None:
+    r = None
+    for attempt in range(1, 4):
+        try:
+            r = session.get(BASE_URL, verify=False, timeout=60)
+            r.raise_for_status()
+            break
+        except requests.RequestException as e:
+            print(f"  [WARN] GET attempt {attempt}/3 for '{BASE_URL}' failed: {e}", flush=True)
+            if attempt == 3:
+                return None
+            time.sleep(2 * attempt)
+
+    if r is None:
+        return None
+
     soup = BeautifulSoup(r.text, "html.parser")
 
     if not year_val or year_val == "0":
@@ -127,7 +143,7 @@ def get_year_soup(session: requests.Session, year_val: str) -> BeautifulSoup:
     }
 
     try:
-        rp = session.post(BASE_URL, data=payload, headers=post_headers, verify=False, timeout=35)
+        rp = session.post(BASE_URL, data=payload, headers=post_headers, verify=False, timeout=60)
         rp.raise_for_status()
         return BeautifulSoup(rp.text, "html.parser")
     except requests.HTTPError as e:
@@ -146,6 +162,10 @@ def crawl_all_selected_years() -> list[dict]:
     for yr in YEARS_TO_CRAWL:
         print(f"\n================ CRAWLING YEAR FILTER: {yr} ================", flush=True)
         soup = get_year_soup(session, yr)
+        if soup is None:
+            print(f"  [WARN] Skipping year '{yr}' because TNPSC did not respond in time.", flush=True)
+            continue
+
         content = soup.find(id="page-content") or soup
 
         rows_collected = 0
@@ -178,7 +198,7 @@ def crawl_all_selected_years() -> list[dict]:
                 if "subjects.aspx" in href.lower():
                     stage = "FINAL" if "final" in href.lower() else "TENTATIVE"
                     try:
-                        sub_soup = BeautifulSoup(session.get(href, verify=False, timeout=30).text, "html.parser")
+                        sub_soup = BeautifulSoup(session.get(href, verify=False, timeout=45).text, "html.parser")
                     except Exception as e:
                         print(f"  [ERR] subjects page {href}: {e}", flush=True)
                         continue
@@ -195,7 +215,7 @@ def crawl_all_selected_years() -> list[dict]:
                         fpath = os.path.join(PDF_DIR, fname)
                         if not os.path.exists(fpath):
                             try:
-                                pr = session.get(pdf_url, verify=False, timeout=45)
+                                pr = session.get(pdf_url, verify=False, timeout=60)
                                 if pr.status_code == 200 and pr.content[:4] == b"%PDF":
                                     with open(fpath, "wb") as f:
                                         f.write(pr.content)
@@ -228,7 +248,7 @@ def crawl_all_selected_years() -> list[dict]:
                     fpath = os.path.join(PDF_DIR, fname)
                     if not os.path.exists(fpath):
                         try:
-                            pr = session.get(href, verify=False, timeout=45)
+                            pr = session.get(href, verify=False, timeout=60)
                             if pr.status_code == 200 and pr.content[:4] == b"%PDF":
                                 with open(fpath, "wb") as f:
                                     f.write(pr.content)
