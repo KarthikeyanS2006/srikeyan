@@ -3,28 +3,31 @@ name: Analyze Paper & Generate Answers
 on:
   workflow_dispatch:
     inputs:
-      source_url:
-        description: "Optional exact source_url to analyze one paper (leave blank for all papers)"
+      exam_tag:
+        description: "Optional exam tag filter (e.g. GROUP_2, GROUP_2A, GROUP_1, GROUP_4, TET_ELIGIBILITY, APP_GRADE_2, SUBJECT_PAPERS, TECH_SERVICES)"
         required: false
         default: ""
-      llm_model:
-        description: "Available model ID (openai/gpt-oss-120b, openai/gpt-oss-20b, qwen/qwen3.8-27b)"
+      source_url:
+        description: "Optional exact source_url filter"
         required: false
-        default: "openai/gpt-oss-120b"
+        default: ""
       batch_size:
-        description: "Questions per LLM request (keep around 8-10 for 8,000 TPM)"
+        description: "Questions per LLM batch (recommended 8 for 8,000 TPM)"
         required: false
-        default: "10"
+        default: "8"
       max_questions:
         description: "Max unanswered questions to process in this run"
         required: false
-        default: "100"
+        default: "200"
+      check_pdf_ticks:
+        description: "Scan PDF text for tick/answer hints (true/false)"
+        required: false
+        default: "true"
 
 jobs:
   analyze-answers:
     runs-on: ubuntu-latest
     timeout-minutes: 25
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -35,18 +38,21 @@ jobs:
           python-version: "3.11"
           cache: "pip"
 
-      - name: Install requests
-        run: pip install requests>=2.31.0
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install requests pypdf
 
-      - name: Analyze questions per paper and update Supabase
+      - name: Run answer analysis
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          LLM_API_URL: ${{ secrets.LLM_API_URL || 'https://api.groq.com/openai/v1/chat/completions' }}
+          LLM_API_URL: ${{ secrets.LLM_API_URL }}
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
-          LLM_MODEL: ${{ inputs.llm_model || secrets.LLM_MODEL || 'openai/gpt-oss-120b' }}
+          LLM_MODEL: ${{ secrets.LLM_MODEL || 'openai/gpt-oss-120b' }}
+          EXAM_TAG_FILTER: ${{ inputs.exam_tag || '' }}
           SOURCE_URL_FILTER: ${{ inputs.source_url || '' }}
-          ANALYZE_BATCH_SIZE: ${{ inputs.batch_size || '10' }}
-          MAX_ANALYZE_QUESTIONS: ${{ inputs.max_questions || '100' }}
-          PYTHONUNBUFFERED: "1"
+          ANALYZE_BATCH_SIZE: ${{ inputs.batch_size || '8' }}
+          MAX_ANALYZE_QUESTIONS: ${{ inputs.max_questions || '200' }}
+          CHECK_PDF_TICKS: ${{ inputs.check_pdf_ticks || 'true' }}
         run: python -u scripts/analyze_paper_answers.py
