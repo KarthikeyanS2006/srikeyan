@@ -117,17 +117,17 @@ def analyze_paper_batch(source_url: str, paper_rows: list[dict]) -> list[dict]:
         for r in paper_rows
     ]
 
- system_msg = (
-    "You are an expert technical and general studies exam solver for TNPSC papers. "
-    "Analyze each question together with all of its options, even when OCR introduces garbled symbols, "
-    "random letters, or broken spacing (for example 'ondie (@)) on punch' or 'es + ¥ +z=Constant'). "
-    "Infer the intended technical/factual meaning of each option and pick the single best matching index. "
-    "STRICT RULE: Never select an option containing 'Answer not known' (case-insensitive) unless the question "
-    "text itself is completely unintelligible or none of the other options is remotely plausible. "
-    "Keep 'reason' concise (under 25 words). "
-    "Return ONLY a JSON array of objects: "
-    '[{"hash": "...", "correct_index": 0, "confidence": 0.9, "reason": "..."}]'
-)
+     system_msg = (
+        "You are an expert technical and general studies exam solver for TNPSC papers. "
+        "Analyze each question together with all of its options, even when OCR introduces garbled symbols, "
+        "random letters, or broken spacing (for example 'ondie (@)) on punch' or 'es + ¥ +z=Constant'). "
+        "Infer the intended technical/factual meaning of each option and pick the single best matching index. "
+        "STRICT RULE: Never select an option containing 'Answer not known' (case-insensitive) unless the question "
+        "text itself is completely unintelligible or none of the other options is remotely plausible. "
+        "Keep 'reason' concise (under 25 words). "
+        "Return ONLY a JSON array of objects: "
+        '[{"hash": "...", "correct_index": 0, "confidence": 0.9, "reason": "..."}]'
+    )
     user_msg = f"Question Paper URL: {source_url}\n\nQuestions:\n" + json.dumps(items, ensure_ascii=False)
 
     resp = None
