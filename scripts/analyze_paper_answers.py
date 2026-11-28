@@ -1,13 +1,33 @@
 import os
+import re
 import json
 import time
 from collections import defaultdict
 import requests
 
-SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip().rstrip("/")
+
+def sanitize_url(raw_url: str, fallback: str = "") -> str:
+    s = (raw_url or "").strip().strip('"').strip("'")
+    # Handle accidental Markdown link format: [label](actual_url)
+    md_match = re.match(r"^\[[^\]]*\]\((https?://[^)\s]+)\)$", s)
+    if md_match:
+        s = md_match.group(1).strip()
+    elif s.startswith("[") and "](" in s and s.endswith(")"):
+        inner = s.split("](", 1)[1][:-1].strip()
+        if inner.startswith(("http://", "https://")):
+            s = inner
+    if not s and fallback:
+        s = fallback
+    return s.rstrip("/")
+
+
+SUPABASE_URL = sanitize_url(os.getenv("SUPABASE_URL", ""))
 SERVICE_KEY = os.getenv("SUPABASE_KEY", "").strip()
 
-LLM_API_URL = os.getenv("LLM_API_URL", "https://api.groq.com/openai/v1/chat/completions").strip()
+LLM_API_URL = sanitize_url(
+    os.getenv("LLM_API_URL", ""),
+    fallback="https://api.groq.com/openai/v1/chat/completions",
+)
 LLM_API_KEY = os.getenv("LLM_API_KEY", "").strip()
 LLM_MODEL = os.getenv("LLM_MODEL", "openai/gpt-oss-120b").strip()
 
@@ -154,12 +174,17 @@ def patch_answer(question_hash: str, correct_index: int, reason: str) -> None:
 
 
 def main() -> None:
-    if not SUPABASE_URL or not SERVICE_KEY:
-        raise RuntimeError("SUPABASE_URL and SUPABASE_KEY secrets are required.")
+    if not SUPABASE_URL.startswith(("http://", "https://")) or not SERVICE_KEY:
+        raise RuntimeError("Valid SUPABASE_URL and SUPABASE_KEY secrets are required.")
+    if not LLM_API_URL.startswith(("http://", "https://")):
+        raise ValueError(f"Invalid LLM_API_URL: {LLM_API_URL!r}")
     if not LLM_API_KEY:
         raise RuntimeError("LLM_API_KEY secret is required.")
 
-    print(f"Using model: {LLM_MODEL} | batch_size={BATCH_SIZE} | max_questions={MAX_QUESTIONS}", flush=True)
+    print(
+        f"Using model: {LLM_MODEL} | endpoint={LLM_API_URL} | batch_size={BATCH_SIZE} | max_questions={MAX_QUESTIONS}",
+        flush=True,
+    )
     grouped_papers = fetch_unanswered_by_paper(MAX_QUESTIONS)
     if not grouped_papers:
         print("No unanswered questions found matching filter.", flush=True)
