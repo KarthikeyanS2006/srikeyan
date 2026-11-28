@@ -1,0 +1,52 @@
+name: Analyze Paper & Generate Answers
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_url:
+        description: "Optional exact source_url to analyze one paper (leave blank for all papers)"
+        required: false
+        default: ""
+      llm_model:
+        description: "Available model ID (openai/gpt-oss-120b, openai/gpt-oss-20b, qwen/qwen3.8-27b)"
+        required: false
+        default: "openai/gpt-oss-120b"
+      batch_size:
+        description: "Questions per LLM request (keep around 8-10 for 8,000 TPM)"
+        required: false
+        default: "10"
+      max_questions:
+        description: "Max unanswered questions to process in this run"
+        required: false
+        default: "100"
+
+jobs:
+  analyze-answers:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install requests
+        run: pip install requests>=2.31.0
+
+      - name: Analyze questions per paper and update Supabase
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          LLM_API_URL: ${{ secrets.LLM_API_URL || '[https://api.groq.com/openai/v1/chat/completions](https://api.groq.com/openai/v1/chat/completions)' }}
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_MODEL: ${{ inputs.llm_model || secrets.LLM_MODEL || 'openai/gpt-oss-120b' }}
+          SOURCE_URL_FILTER: ${{ inputs.source_url || '' }}
+          ANALYZE_BATCH_SIZE: ${{ inputs.batch_size || '10' }}
+          MAX_ANALYZE_QUESTIONS: ${{ inputs.max_questions || '100' }}
+          PYTHONUNBUFFERED: "1"
+        run: python -u scripts/analyze_paper_answers.py
