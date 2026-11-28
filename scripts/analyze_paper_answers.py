@@ -32,7 +32,7 @@ LLM_API_KEY = os.getenv("LLM_API_KEY", "").strip()
 LLM_MODEL = os.getenv("LLM_MODEL", "openai/gpt-oss-120b").strip()
 
 SOURCE_URL_FILTER = os.getenv("SOURCE_URL_FILTER", "").strip()
-BATCH_SIZE = int(os.getenv("ANALYZE_BATCH_SIZE", "10"))
+BATCH_SIZE = int(os.getenv("ANALYZE_BATCH_SIZE", "8"))
 MAX_QUESTIONS = int(os.getenv("MAX_ANALYZE_QUESTIONS", "100"))
 
 
@@ -117,7 +117,7 @@ def analyze_paper_batch(source_url: str, paper_rows: list[dict]) -> list[dict]:
         for r in paper_rows
     ]
 
-     system_msg = (
+    system_msg = (
         "You are an expert technical and general studies exam solver for TNPSC papers. "
         "Analyze each question together with all of its options, even when OCR introduces garbled symbols, "
         "random letters, or broken spacing (for example 'ondie (@)) on punch' or 'es + ¥ +z=Constant'). "
@@ -221,7 +221,7 @@ def main() -> None:
                         f"  [OK] {h} -> index {idx} ({q_obj['_parsed_options'][idx][:50]})",
                         flush=True,
                     )
-            time.sleep(2.5)
+            time.sleep(4.0)
 
     print(f"\nCompleted paper analysis. Updated {total_updated} questions in Supabase.", flush=True)
 
