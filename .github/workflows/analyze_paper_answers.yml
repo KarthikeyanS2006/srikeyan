@@ -42,7 +42,7 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          LLM_API_URL: ${{ secrets.LLM_API_URL || '[https://api.groq.com/openai/v1/chat/completions](https://api.groq.com/openai/v1/chat/completions)' }}
+          LLM_API_URL: ${{ secrets.LLM_API_URL || 'https://api.groq.com/openai/v1/chat/completions' }}
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
           LLM_MODEL: ${{ inputs.llm_model || secrets.LLM_MODEL || 'openai/gpt-oss-120b' }}
           SOURCE_URL_FILTER: ${{ inputs.source_url || '' }}
