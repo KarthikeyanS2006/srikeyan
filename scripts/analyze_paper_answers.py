@@ -170,7 +170,14 @@ def patch_answer(question_hash: str, correct_index: int, reason: str) -> None:
         "explanation_en": reason[:1000] if reason else None,
     }
     resp = requests.patch(url, headers=headers, json=body, timeout=60)
-    resp.raise_for_status()
+    if resp.status_code == 400 and "explanation_en" in resp.text:
+        fallback_body = {
+            "correct_index": int(correct_index),
+            "has_answer_key": True,
+        }
+        resp = requests.patch(url, headers=headers, json=fallback_body, timeout=60)
+    if not resp.ok:
+        raise RuntimeError(f"Supabase PATCH failed ({resp.status_code}): {resp.text}")
 
 
 def main() -> None:
